@@ -168,6 +168,9 @@ const SRC = {
   t2: RAW + 'Fcairo1/agregador-br/main/data/polls.presidente-2t-flavio.csv',
   res: RAW + 'Fcairo1/agregador-br/main/data/results.presidente.json',
   agenda: RAW + 'rafaujo/eleicoes-2026-pesquisas/main/data/tse-monitor.json',
+  // Extra runoff sources, merged with t2 so whichever publishes a poll first wins.
+  boca: RAW + 'bocadojacare/agregador-eleicoes-2026/main/data/segundo_turno/pesquisas_segundo_turno.json',
+  wiki: 'https://en.wikipedia.org/w/api.php?format=json&formatversion=2&origin=*&page=Opinion_polling_for_the_2026_Brazilian_presidential_election',
 };
 const ELECTION_1T = '2026-10-04';
 const ELECTION_2T = '2026-10-25';
@@ -202,6 +205,86 @@ function parseCSV(t) {
   return rows.filter(r => r.length > 1).map(r => Object.fromEntries(head.map((k, i) => [k, r[i] ?? ''])));
 }
 
+// One key per institute across sources: "Genial/Quaest" and "Quaest" -> "quaest",
+// "Modalmais/Futura" and "Futura Inteligência" -> "futura", "Verita" and "Veritá" -> "verita".
+const KEY_STOP = new Set(['instituto', 'inteligencia', 'pesquisa', 'pesquisas', 'brasil', 'de', 'e', 'ltda', 'btg', 'pactual',
+  'genial', 'modalmais', 'apex', 'aya', 'meio', 'broadcast', '100', 'cidades', 'cnt']);
+const pollsterKey = s => norm(s).split(/[^a-z0-9]+/).filter(t => t && !KEY_STOP.has(t))[0] || norm(s);
+
+const MONTHS = { jan: 0, feb: 1, fev: 1, mar: 2, apr: 3, abr: 3, may: 4, mai: 4, jun: 5, jul: 6, aug: 7, ago: 7,
+  sep: 8, set: 8, oct: 9, out: 9, nov: 10, dec: 11, dez: 11 };
+// "15–17 Oct", "30 Sep–2 Oct", "15 Out – 17 Out 2026" -> [startDay, endDay]
+function parsePeriod(s, year = 2026) {
+  const y = s.match(/\b(20\d\d)\b/);
+  if (y) year = +y[1];
+  const parts = norm(s).replace(/\d{4}/, '').split(/\s*[–—-]\s*/).map(p => p.trim()).filter(Boolean);
+  const read = p => { const m = p.match(/(\d{1,2})(?:\s+([a-z]{3}))?/); return m && { d: +m[1], mo: m[2] in MONTHS ? MONTHS[m[2]] : null }; };
+  const e = read(parts[parts.length - 1]), b = read(parts[0]);
+  if (!e || e.mo === null || !b) return null;
+  const end = Date.UTC(year, e.mo, e.d) / 864e5;
+  return [Date.UTC(year, b.mo ?? e.mo, b.d) / 864e5, end];
+}
+
+// Wikitext helpers: split on a separator only outside [[...]] and {{...}}.
+function splitTop(s, sep) {
+  const out = []; let depth = 0, cur = '';
+  for (let i = 0; i < s.length; i++) {
+    const two = s.slice(i, i + 2);
+    if (two === '[[' || two === '{{') { depth++; cur += two; i++; continue; }
+    if ((two === ']]' || two === '}}') && depth) { depth--; cur += two; i++; continue; }
+    if (!depth && s.startsWith(sep, i)) { out.push(cur); cur = ''; i += sep.length - 1; continue; }
+    cur += s[i];
+  }
+  out.push(cur);
+  return out;
+}
+const cleanWiki = s => s
+  .replace(/<ref[^>]*\/>/g, '').replace(/<ref[\s\S]*?<\/ref>/g, '')
+  .replace(/\{\{[^{}]*\}\}/g, '').replace(/\[\[(?:[^\]|]*\|)?([^\]]*)\]\]/g, '$1')
+  .replace(/'''?/g, '').replace(/<[^>]+>/g, ' ').trim();
+
+// First runoff table on the English Wikipedia page (newest polls), as [{pollster, start, end, n, lula, flavio}].
+async function fetchWikipedia() {
+  const sec = await fetch(SRC.wiki + '&action=parse&prop=sections').then(r => r.json());
+  const list = sec.parse.sections;
+  const runoff = list.findIndex(s => /second round/i.test(s.line));
+  const first = list.slice(runoff + 1).find(s => +s.toclevel > +list[runoff].toclevel + 1);
+  const txt = await fetch(SRC.wiki + '&action=parse&prop=wikitext&section=' + first.index).then(r => r.json());
+  const rows = txt.parse.wikitext.split(/\n\|-/).slice(1);
+  const out = [];
+  for (const row of rows) {
+    const cells = row.split('\n').filter(l => l.startsWith('|') && !l.startsWith('|}'))
+      .flatMap(l => splitTop(l.slice(1), '||'))
+      .map(c => { const p = splitTop(c, '|'); return cleanWiki(p[p.length - 1]); });
+    if (cells.length < 7) continue;
+    const [pollster, period, lula, flavio, , , n] = cells;
+    const dates = parsePeriod(period);
+    if (!pollster || !dates || !isFinite(+lula) || !isFinite(+flavio) || !+lula) continue;
+    out.push({ pollster, start: dates[0], end: dates[1], n: +n.replace(/[^\d]/g, '') || 0, lula: +lula, flavio: +flavio, via: 'Wikipédia' });
+  }
+  return out;
+}
+
+async function fetchBoca() {
+  const data = await fetch(SRC.boca, { cache: 'no-cache' }).then(r => r.json());
+  return data.map(x => {
+    const dates = parsePeriod(x.data), c = x.candidatos || {};
+    return dates && { pollster: x.instituto, start: dates[0], end: dates[1], n: 0, lula: +c.Lula, flavio: +(c['Flávio'] ?? c.Flavio), via: 'bocadojacare' };
+  }).filter(Boolean);
+}
+
+// Union of sources in priority order; a poll already seen (same institute, fieldwork end ±1 day) is skipped.
+function mergePolls(sources) {
+  const out = [];
+  for (const list of sources) for (const p of list) {
+    if (!(p.lula > 0 && p.flavio > 0) || p.end > TODAY) continue;
+    const key = pollsterKey(p.pollster);
+    if (out.some(q => q.key === key && Math.abs(q.end - p.end) <= 1)) continue;
+    out.push({ ...p, key, lula: p.lula / (p.lula + p.flavio) * 100 });
+  }
+  return out;
+}
+
 // Institutes whose last poll before the 1st round (fieldwork ending in the final week)
 // had the correct leader between the two candidates who reached the runoff.
 function accuratePollsters(t1, res) {
@@ -210,17 +293,17 @@ function accuratePollsters(t1, res) {
   const [k1, k2] = top.map(c => norm(c.urna).split(' ')[0]);
   const last = {};
   for (const r of t1) {
-    const e = day(r.end);
+    const e = day(r.end), k = pollsterKey(r.pollster);
     if (e >= E || e < E - 7 || r[k1] === '' || r[k2] === '') continue;
-    if (!last[r.pollster] || e >= day(last[r.pollster].end)) last[r.pollster] = r;
+    if (!last[k] || e >= day(last[k].end)) last[k] = r;
   }
-  const hit = Object.keys(last).filter(p => +last[p][k1] > +last[p][k2]).sort();
+  const hitKeys = Object.keys(last).filter(k => +last[k][k1] > +last[k][k2]);
   // Each pollster's 1st-round miss on Lula's two-way share (result minus poll), in pp.
   const pctOf = k => res.candidates.find(c => norm(c.urna).split(' ')[0] === k).pct;
   const resLula = pctOf('lula') / (pctOf('lula') + pctOf('flavio')) * 100;
   const bias = {};
-  for (const [p, r] of Object.entries(last)) bias[p] = resLula - +r.lula / (+r.lula + +r.flavio) * 100;
-  return { hit: new Set(hit), total: Object.keys(last).length, winner: top[0].urna, bias };
+  for (const [k, r] of Object.entries(last)) bias[k] = resLula - +r.lula / (+r.lula + +r.flavio) * 100;
+  return { hit: new Set(hitKeys), names: hitKeys.map(k => last[k].pollster).sort(), total: Object.keys(last).length, winner: top[0].urna, bias };
 }
 
 // ---- Projection: five independent methods, averaged into an ensemble ----
@@ -287,7 +370,7 @@ function forecast(polls, bias) {
   const kalman = () => x;
 
   // 5. Current average corrected by these pollsters' 1st-round miss.
-  const misses = [...new Set(post.map(p => p.pollster))].filter(p => p in bias).map(p => bias[p]);
+  const misses = [...new Set(post.map(p => p.key))].filter(k => k in bias).map(k => bias[k]);
   const meanMiss = misses.length ? misses.reduce((a, b) => a + b, 0) / misses.length : 0;
   const corrected = () => now.lula + meanMiss;
 
@@ -331,23 +414,25 @@ let MODE = location.hash === '#acertaram' ? 'hit' : 'all';
 async function load() {
   TODAY = localToday();
   const get = (u, type) => fetch(u, { cache: 'no-cache' }).then(r => { if (!r.ok) throw new Error(u); return r[type](); });
-  const [t1, t2, res, agenda] = await Promise.all([
+  const fcairo = () => get(SRC.t2, 'text').then(parseCSV).then(rows => rows.map(r => ({
+    pollster: r.pollster, start: day(r.start), end: day(r.end), n: +r.n, lula: +r.lula, flavio: +r.flavio, via: 'Fcairo1' })));
+  const runoffSources = [['Fcairo1', fcairo], ['Wikipédia', fetchWikipedia], ['bocadojacare', fetchBoca]];
+  const [t1, res, agenda, ...lists] = await Promise.all([
     get(SRC.t1, 'text').then(parseCSV),
-    get(SRC.t2, 'text').then(parseCSV),
     get(SRC.res, 'json'),
     get(SRC.agenda, 'json').catch(() => null),
+    ...runoffSources.map(([, f]) => f().catch(() => null)),
   ]);
+  const status = runoffSources.map(([name], i) => ({ name, ok: !!lists[i], count: lists[i]?.length || 0 }));
+  if (!lists.some(Boolean)) throw new Error('nenhuma fonte de 2º turno respondeu');
   const acc = accuratePollsters(t1, res);
-  const polls = t2.map(r => {
-    const l = +r.lula, f = +r.flavio;
-    return { pollster: r.pollster, start: day(r.start), end: day(r.end), n: +r.n, lula: l / (l + f) * 100, raw: [l, f], src: r.source };
-  }).filter(p => isFinite(p.lula) && p.end >= day(CHART_FROM) - WINDOW_DAYS);
-  DATA = { polls, acc, agenda, loadedAt: new Date() };
+  const polls = mergePolls(lists.filter(Boolean)).filter(p => p.end >= day(CHART_FROM) - WINDOW_DAYS);
+  DATA = { polls, acc, agenda, status, loadedAt: new Date() };
   render();
 }
 
 function currentPolls() {
-  return MODE === 'hit' ? DATA.polls.filter(p => DATA.acc.hit.has(p.pollster)) : DATA.polls;
+  return MODE === 'hit' ? DATA.polls.filter(p => DATA.acc.hit.has(p.key)) : DATA.polls;
 }
 
 function render() {
@@ -364,7 +449,7 @@ function render() {
       `<span>Vantagem: <b>${lead}</b></span>` +
       `<span><b>${cur.used.length}</b> pesquisas nos últimos ${WINDOW_DAYS} dias</span>` +
       `<span>Última: <b>${br(lastEnd)}</b></span>` +
-      (MODE === 'hit' ? `<span>Institutos: <b>${[...DATA.acc.hit].join(', ')}</b></span>` : '');
+      (MODE === 'hit' ? `<span>Institutos: <b>${DATA.acc.names.join(', ')}</b></span>` : '');
   } else {
     $('#vL').textContent = $('#vF').textContent = '–';
     $('#meta').textContent = `Nenhuma pesquisa nos últimos ${WINDOW_DAYS} dias.`;
@@ -500,10 +585,7 @@ function onMove(e) {
   tip.style.top = (svg.offsetTop + 8) + 'px';
 }
 
-// Match agenda trade names ("Futura Inteligência") to poll names ("Modalmais/Futura").
-const STOP = new Set(['instituto', 'inteligencia', 'pesquisa', 'pesquisas', 'brasil', 'de', 'e', 'ltda', 'btg', 'pactual', 'genial', 'modalmais', 'aya', 'meio']);
-const tokens = s => norm(s).split(/[^a-z0-9]+/).filter(t => t.length > 2 && !STOP.has(t));
-const isHit = name => { const t = new Set(tokens(name)); return [...DATA.acc.hit].some(h => tokens(h).some(x => t.has(x))); };
+const isHit = name => DATA.acc.hit.has(pollsterKey(name));
 
 function renderNext() {
   const tb = $('#next');
@@ -528,12 +610,15 @@ function renderFoot() {
     `<p><b>Como a média é feita:</b> votos válidos (Lula ÷ (Lula + Flávio)); última pesquisa de cada instituto nos últimos ${WINDOW_DAYS} dias; ` +
     `peso = √amostra (limite ${N_CAP.toLocaleString('pt-BR')}) × meia-vida de ${HALF_LIFE} dias.</p>` +
     `<p><b>"Acertaram o 1º turno":</b> ${acc.hit.size} de ${acc.total} institutos cuja última pesquisa antes de 4/out ` +
-    `colocava ${acc.winner === 'FLAVIO BOLSONARO' ? 'Flávio' : acc.winner} à frente, como no resultado do TSE: ${[...acc.hit].join(', ')}.</p>` +
+    `colocava ${acc.winner === 'FLAVIO BOLSONARO' ? 'Flávio' : acc.winner} à frente, como no resultado do TSE: ${acc.names.join(', ')}.</p>` +
     `<p><b>Projeção:</b> média de 5 métodos aplicados às pesquisas do filtro ativo — regressão linear ponderada (pesquisas desde o 1º turno), ` +
     `LOESS (ajuste local de ${BW} dias, extrapolado), Holt amortecido (nível + tendência da média diária), filtro de Kalman (nível com ruído amostral e de instituto) ` +
     `e média atual corrigida pelo erro desses institutos no 1º turno. A chance soma a divergência entre os métodos ao erro histórico dos institutos no 1º turno. ` +
     `É uma estimativa estatística, não uma previsão garantida.</p>` +
+    `<p>Fontes do 2º turno (juntas, sem duplicatas): ` + DATA.status.map(s => `${s.name} ${s.ok ? '✓ ' + s.count : '✗ fora do ar'}`).join(' · ') + `.</p>` +
     `<p>Dados: <a href="https://github.com/Fcairo1/agregador-br">Fcairo1/agregador-br</a> (pesquisas e resultado TSE) · ` +
+    `<a href="https://en.wikipedia.org/wiki/Opinion_polling_for_the_2026_Brazilian_presidential_election">Wikipédia</a> · ` +
+    `<a href="https://github.com/bocadojacare/agregador-eleicoes-2026">bocadojacare</a> · ` +
     `<a href="https://github.com/rafaujo/eleicoes-2026-pesquisas">rafaujo/eleicoes-2026-pesquisas</a> (agenda de registros no TSE` +
     (DATA.agenda?.sourceGeneratedAt ? `, atualizada em ${DATA.agenda.sourceGeneratedAt}` : '') + `).</p>` +
     `<p>Dados carregados às ${DATA.loadedAt.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })} · recarrega sozinho a cada ${REFRESH_MIN} min.</p>`;
