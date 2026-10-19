@@ -170,7 +170,6 @@ const SRC = {
   agenda: RAW + 'rafaujo/eleicoes-2026-pesquisas/main/data/tse-monitor.json',
   // Extra runoff sources, merged with t2 so whichever publishes a poll first wins.
   boca: RAW + 'bocadojacare/agregador-eleicoes-2026/main/data/segundo_turno/pesquisas_segundo_turno.json',
-  wiki: 'https://en.wikipedia.org/w/api.php?format=json&formatversion=2&origin=*&page=Opinion_polling_for_the_2026_Brazilian_presidential_election',
 };
 const ELECTION_1T = '2026-10-04';
 const ELECTION_2T = '2026-10-25';
@@ -218,6 +217,7 @@ function parsePeriod(s, year = 2026) {
   const y = s.match(/\b(20\d\d)\b/);
   if (y) year = +y[1];
   const parts = norm(s).replace(/\d{4}/, '').split(/\s*[–—-]\s*/).map(p => p.trim()).filter(Boolean);
+  if (!parts.length) return null;
   const read = p => { const m = p.match(/(\d{1,2})(?:\s+([a-z]{3}))?/); return m && { d: +m[1], mo: m[2] in MONTHS ? MONTHS[m[2]] : null }; };
   const e = read(parts[parts.length - 1]), b = read(parts[0]);
   if (!e || e.mo === null || !b) return null;
@@ -243,24 +243,38 @@ const cleanWiki = s => s
   .replace(/\{\{[^{}]*\}\}/g, '').replace(/\[\[(?:[^\]|]*\|)?([^\]]*)\]\]/g, '$1')
   .replace(/'''?/g, '').replace(/<[^>]+>/g, ' ').trim();
 
-// First runoff table on the English Wikipedia page (newest polls), as [{pollster, start, end, n, lula, flavio}].
-async function fetchWikipedia() {
-  const sec = await fetch(SRC.wiki + '&action=parse&prop=sections').then(r => r.json());
-  const list = sec.parse.sections;
-  const runoff = list.findIndex(s => /second round/i.test(s.line));
-  const first = list.slice(runoff + 1).find(s => +s.toclevel > +list[runoff].toclevel + 1);
-  const txt = await fetch(SRC.wiki + '&action=parse&prop=wikitext&section=' + first.index).then(r => r.json());
-  const rows = txt.parse.wikitext.split(/\n\|-/).slice(1);
+// Runoff tables on Wikipedia, read through the public API. Each edition has its own
+// section layout and column order; `section` picks the section, `cols` the cells
+// [pollster, period, sample, lula, flavio].
+const WIKIS = [
+  { name: 'Wikipédia PT', host: 'pt.wikipedia.org', page: 'Pesquisas_de_opinião_para_a_eleição_presidencial_no_Brasil_em_2026',
+    cols: [0, 1, 2, 4, 5],
+    // "Segundo turno" > "Lula e Flávio Bolsonaro" > "2026"
+    section: list => { const i = list.findIndex(s => /lula/i.test(s.line) && /fl[aá]vio/i.test(s.line));
+      return i < 0 ? null : list.slice(i + 1).find(s => s.line.trim() === '2026'); } },
+  { name: 'Wikipédia EN', host: 'en.wikipedia.org', page: 'Opinion_polling_for_the_2026_Brazilian_presidential_election',
+    cols: [0, 1, 6, 2, 3],
+    // "Second round" > "2026" > first subsection (newest polls)
+    section: list => { const i = list.findIndex(s => /second round/i.test(s.line));
+      return i < 0 ? null : list.slice(i + 1).find(s => +s.toclevel > +list[i].toclevel + 1); } },
+];
+const wikiNum = s => +s.replace(/%/g, '').replace(/\s/g, '').replace(',', '.');
+
+async function fetchWiki(w) {
+  const api = `https://${w.host}/w/api.php?format=json&formatversion=2&origin=*&page=${encodeURIComponent(w.page)}&action=parse`;
+  const sec = w.section((await fetch(api + '&prop=sections').then(r => r.json())).parse.sections);
+  if (!sec) throw new Error(w.name + ': seção não encontrada');
+  const txt = (await fetch(api + '&prop=wikitext&section=' + sec.index).then(r => r.json())).parse.wikitext;
+  const rows = txt.replace(/<!--[\s\S]*?-->/g, '').replace(/<ref[^>]*\/>/g, '').replace(/<ref[\s\S]*?<\/ref>/g, '').split(/\n\|-/).slice(1);
   const out = [];
   for (const row of rows) {
     const cells = row.split('\n').filter(l => l.startsWith('|') && !l.startsWith('|}'))
       .flatMap(l => splitTop(l.slice(1), '||'))
       .map(c => { const p = splitTop(c, '|'); return cleanWiki(p[p.length - 1]); });
-    if (cells.length < 7) continue;
-    const [pollster, period, lula, flavio, , , n] = cells;
+    const [pollster, period, n, lula, flavio] = w.cols.map(i => cells[i] ?? '');
     const dates = parsePeriod(period);
-    if (!pollster || !dates || !isFinite(+lula) || !isFinite(+flavio) || !+lula) continue;
-    out.push({ pollster, start: dates[0], end: dates[1], n: +n.replace(/[^\d]/g, '') || 0, lula: +lula, flavio: +flavio, via: 'Wikipédia' });
+    if (!pollster || !dates || !(wikiNum(lula) > 0) || !(wikiNum(flavio) > 0)) continue;
+    out.push({ pollster, start: dates[0], end: dates[1], n: +n.replace(/[^\d]/g, '') || 0, lula: wikiNum(lula), flavio: wikiNum(flavio), via: w.name });
   }
   return out;
 }
@@ -416,7 +430,7 @@ async function load() {
   const get = (u, type) => fetch(u, { cache: 'no-cache' }).then(r => { if (!r.ok) throw new Error(u); return r[type](); });
   const fcairo = () => get(SRC.t2, 'text').then(parseCSV).then(rows => rows.map(r => ({
     pollster: r.pollster, start: day(r.start), end: day(r.end), n: +r.n, lula: +r.lula, flavio: +r.flavio, via: 'Fcairo1' })));
-  const runoffSources = [['Fcairo1', fcairo], ['Wikipédia', fetchWikipedia], ['bocadojacare', fetchBoca]];
+  const runoffSources = [['Fcairo1', fcairo], ...WIKIS.map(w => [w.name, () => fetchWiki(w)]), ['bocadojacare', fetchBoca]];
   const [t1, res, agenda, ...lists] = await Promise.all([
     get(SRC.t1, 'text').then(parseCSV),
     get(SRC.res, 'json'),
@@ -617,7 +631,7 @@ function renderFoot() {
     `É uma estimativa estatística, não uma previsão garantida.</p>` +
     `<p>Fontes do 2º turno (juntas, sem duplicatas): ` + DATA.status.map(s => `${s.name} ${s.ok ? '✓ ' + s.count : '✗ fora do ar'}`).join(' · ') + `.</p>` +
     `<p>Dados: <a href="https://github.com/Fcairo1/agregador-br">Fcairo1/agregador-br</a> (pesquisas e resultado TSE) · ` +
-    `<a href="https://en.wikipedia.org/wiki/Opinion_polling_for_the_2026_Brazilian_presidential_election">Wikipédia</a> · ` +
+    WIKIS.map(w => `<a href="https://${w.host}/wiki/${w.page}">${w.name}</a>`).join(' · ') + ' · ' +
     `<a href="https://github.com/bocadojacare/agregador-eleicoes-2026">bocadojacare</a> · ` +
     `<a href="https://github.com/rafaujo/eleicoes-2026-pesquisas">rafaujo/eleicoes-2026-pesquisas</a> (agenda de registros no TSE` +
     (DATA.agenda?.sourceGeneratedAt ? `, atualizada em ${DATA.agenda.sourceGeneratedAt}` : '') + `).</p>` +
