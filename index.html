@@ -1,0 +1,556 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agregador 2º Turno</title>
+<meta name="description" content="Média das pesquisas do 2º turno presidencial 2026 (Lula × Flávio Bolsonaro), geral ou só dos institutos que acertaram o 1º turno.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #FFFDF5;
+  --surface: #FFFFFF;
+  --ink: #111111;
+  --ink-2: #444444;
+  --muted: #777777;
+  --line: #111111;
+  --grid: #E4E1D6;
+  --shadow: #111111;
+  --accent: #FFD93D;
+  --lula: #D62839;
+  --flavio: #1F4FD1;
+  --on-color: #FFFFFF;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #151515; --surface: #1E1E1E; --ink: #F5F3EA; --ink-2: #C9C6BB; --muted: #8E8B82;
+    --line: #F5F3EA; --grid: #333333; --shadow: #F5F3EA; --accent: #FFD93D;
+    --lula: #F0404F; --flavio: #4C7DF0; --on-color: #FFFFFF;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #151515; --surface: #1E1E1E; --ink: #F5F3EA; --ink-2: #C9C6BB; --muted: #8E8B82;
+  --line: #F5F3EA; --grid: #333333; --shadow: #F5F3EA; --accent: #FFD93D;
+  --lula: #F0404F; --flavio: #4C7DF0; --on-color: #FFFFFF;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--bg); color: var(--ink);
+  font: 500 16px/1.45 "Space Grotesk", system-ui, sans-serif;
+}
+main { max-width: 960px; min-width: 0; margin: 0 auto; padding: 32px 16px 48px; }
+h1, .big { font-family: "Archivo Black", "Arial Black", sans-serif; font-weight: 400; letter-spacing: -0.02em; }
+h1 { font-size: clamp(28px, 6vw, 48px); line-height: 1; margin: 0; text-transform: uppercase; }
+h2 { font-family: "Archivo Black", sans-serif; font-weight: 400; font-size: 20px; text-transform: uppercase; margin: 0 0 12px; }
+.box { background: var(--surface); border: 3px solid var(--line); box-shadow: 6px 6px 0 var(--shadow); }
+header { display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: 16px; margin-bottom: 24px; }
+.sub { margin: 8px 0 0; color: var(--ink-2); }
+.tag { display: inline-block; background: var(--accent); color: #111; border: 3px solid var(--line); padding: 2px 8px; font-weight: 700; font-size: 13px; text-transform: uppercase; transform: rotate(-2deg); }
+
+.toggle { display: inline-flex; border: 3px solid var(--line); box-shadow: 4px 4px 0 var(--shadow); background: var(--surface); }
+.toggle button {
+  font: 700 14px "Space Grotesk", sans-serif; text-transform: uppercase; color: var(--ink);
+  background: transparent; border: 0; padding: 10px 14px; cursor: pointer;
+}
+.toggle button + button { border-left: 3px solid var(--line); }
+.toggle button[aria-pressed="true"] { background: var(--accent); color: #111; }
+.toggle button:focus-visible { outline: 3px solid var(--flavio); outline-offset: 2px; }
+
+.hero { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; margin-bottom: 16px; }
+.card { padding: 16px 20px; color: var(--on-color); border: 3px solid var(--line); box-shadow: 6px 6px 0 var(--shadow); }
+.card.lula { background: var(--lula); }
+.card.flavio { background: var(--flavio); }
+.card .name { font-weight: 700; text-transform: uppercase; font-size: 14px; }
+.card .big { font-size: clamp(44px, 11vw, 88px); line-height: 1; margin-top: 4px; }
+.card .big small { font-size: .45em; }
+.meta { display: flex; flex-wrap: wrap; gap: 8px 20px; margin: 0 0 24px; font-size: 14px; color: var(--ink-2); }
+.meta b { color: var(--ink); }
+
+.proj { padding: 16px 20px; margin-bottom: 24px; }
+.proj-head p { margin: 10px 0 0; font-size: 18px; }
+.proj-head .big { font-size: clamp(28px, 6vw, 40px); text-transform: uppercase; vertical-align: -2px; }
+.chips { list-style: none; display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0 0; padding: 0; }
+.chips li { border: 2px solid var(--line); padding: 4px 10px; font-size: 13px; background: var(--bg); }
+.chips i { display: inline-block; width: 10px; height: 10px; margin-right: 6px; border: 2px solid var(--line); vertical-align: -1px; }
+.chart { padding: 16px; margin-bottom: 32px; position: relative; }
+.legend { display: flex; gap: 16px; font-size: 14px; margin-bottom: 8px; flex-wrap: wrap; }
+.legend span::before { content: ""; display: inline-block; width: 14px; height: 4px; margin-right: 6px; vertical-align: middle; background: var(--c); }
+#plot { width: 100%; height: 320px; display: block; }
+#plot text { font: 500 12px "Space Grotesk", sans-serif; fill: var(--muted); }
+#plot .lbl { font-weight: 700; fill: var(--ink); font-size: 13px; }
+#plot .ev { fill: var(--ink); font-weight: 700; font-size: 11px; text-transform: uppercase; }
+.tip {
+  position: absolute; pointer-events: none; background: var(--surface); color: var(--ink);
+  border: 3px solid var(--line); box-shadow: 4px 4px 0 var(--shadow); padding: 8px 10px; font-size: 13px;
+  white-space: nowrap; display: none;
+}
+.tip i { display: inline-block; width: 10px; height: 10px; margin-right: 6px; border: 2px solid var(--line); }
+
+.tablewrap { overflow-x: auto; max-width: 100%; }
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th, td { text-align: left; padding: 10px 12px; border-bottom: 2px solid var(--grid); white-space: nowrap; }
+th { font-size: 12px; text-transform: uppercase; background: var(--ink); color: var(--bg); border-bottom: 0; }
+td.num { font-variant-numeric: tabular-nums; }
+tr:last-child td { border-bottom: 0; }
+.star { background: var(--accent); color: #111; border: 2px solid var(--line); font-size: 11px; font-weight: 700; padding: 0 5px; margin-left: 6px; text-transform: uppercase; }
+.empty { padding: 16px; color: var(--ink-2); }
+
+footer { margin-top: 32px; font-size: 13px; color: var(--muted); }
+footer a { color: var(--ink-2); }
+.err { padding: 16px; background: var(--accent); color: #111; border: 3px solid var(--line); margin-bottom: 16px; font-weight: 700; display: none; }
+
+@media (max-width: 560px) {
+  .hero { gap: 12px; }
+  .card { padding: 12px; }
+  .card .name { font-size: 11px; }
+  .card .big { font-size: 40px; }
+  #plot { height: 260px; }
+  th, td { padding: 8px; }
+  .col-reg { display: none; }
+}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <span class="tag">2º turno · 25 out 2026</span>
+      <h1 style="margin-top:12px">Lula × Flávio</h1>
+      <p class="sub">Média das pesquisas de 2º turno, em votos válidos.</p>
+    </div>
+    <div class="toggle" role="group" aria-label="Filtro de institutos">
+      <button type="button" data-mode="all" aria-pressed="true">Média geral</button>
+      <button type="button" data-mode="hit" aria-pressed="false">Acertaram o 1º turno</button>
+    </div>
+  </header>
+
+  <div class="err" id="err"></div>
+
+  <section class="hero" aria-live="polite">
+    <div class="card lula"><div class="name">Lula · PT</div><div class="big" id="vL">–</div></div>
+    <div class="card flavio"><div class="name">Flávio Bolsonaro · PL</div><div class="big" id="vF">–</div></div>
+  </section>
+  <p class="meta" id="meta"></p>
+
+  <section class="box proj" id="proj" style="display:none" aria-live="polite"></section>
+
+  <section class="box chart">
+    <div class="legend">
+      <span style="--c:var(--lula)">Lula</span>
+      <span style="--c:var(--flavio)">Flávio</span>
+      <span style="color:var(--muted)">● pesquisas individuais</span>
+      <span style="color:var(--muted)">- - - projeção (faixa de 80%)</span>
+    </div>
+    <svg id="plot" role="img" aria-label="Evolução da média do 2º turno"></svg>
+    <div class="tip" id="tip"></div>
+  </section>
+
+  <section>
+    <h2>Próximas pesquisas</h2>
+    <div class="box tablewrap">
+      <table>
+        <thead><tr><th>Divulgação</th><th>Instituto</th><th>Campo</th><th>Amostra</th><th class="col-reg">Registro TSE</th></tr></thead>
+        <tbody id="next"><tr><td colspan="5" class="empty">Carregando…</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <footer id="foot"></footer>
+</main>
+
+<script>
+const RAW = 'https://raw.githubusercontent.com/';
+const SRC = {
+  t1: RAW + 'Fcairo1/agregador-br/main/data/polls.presidente.csv',
+  t2: RAW + 'Fcairo1/agregador-br/main/data/polls.presidente-2t-flavio.csv',
+  res: RAW + 'Fcairo1/agregador-br/main/data/results.presidente.json',
+  agenda: RAW + 'rafaujo/eleicoes-2026-pesquisas/main/data/tse-monitor.json',
+};
+const ELECTION_1T = '2026-10-04';
+const ELECTION_2T = '2026-10-25';
+const CHART_FROM = '2026-09-01';
+const WINDOW_DAYS = 14;   // polls older than this drop out of the average
+const HALF_LIFE = 7;      // recency weight halves every 7 days
+const N_CAP = 4000;       // sample-size influence capped before sqrt weighting
+
+const $ = s => document.querySelector(s);
+const day = s => Date.UTC(+s.slice(0, 4), +s.slice(5, 7) - 1, +s.slice(8, 10)) / 864e5;
+const iso = d => new Date(d * 864e5).toISOString().slice(0, 10);
+const MES = ['jan','fev','mar','abr','mai','jun','jul','ago','set','out','nov','dez'];
+const br = d => { const x = new Date(d * 864e5); return x.getUTCDate() + ' ' + MES[x.getUTCMonth()]; };
+const pct = v => v.toFixed(1).replace('.', ',');
+const norm = s => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+const localToday = () => { const n = new Date(); return day(`${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`); };
+let TODAY = localToday();
+const REFRESH_MIN = 30;
+
+function parseCSV(t) {
+  const rows = []; let row = [], f = '', q = false;
+  for (let i = 0; i < t.length; i++) {
+    const c = t[i];
+    if (q) { if (c === '"') { if (t[i + 1] === '"') { f += '"'; i++; } else q = false; } else f += c; }
+    else if (c === '"') q = true;
+    else if (c === ',') { row.push(f); f = ''; }
+    else if (c === '\n') { row.push(f); rows.push(row); row = []; f = ''; }
+    else if (c !== '\r') f += c;
+  }
+  if (f || row.length) { row.push(f); rows.push(row); }
+  const head = rows.shift();
+  return rows.filter(r => r.length > 1).map(r => Object.fromEntries(head.map((k, i) => [k, r[i] ?? ''])));
+}
+
+// Institutes whose last poll before the 1st round (fieldwork ending in the final week)
+// had the correct leader between the two candidates who reached the runoff.
+function accuratePollsters(t1, res) {
+  const E = day(ELECTION_1T);
+  const top = res.candidates.slice().sort((a, b) => b.pct - a.pct).slice(0, 2);
+  const [k1, k2] = top.map(c => norm(c.urna).split(' ')[0]);
+  const last = {};
+  for (const r of t1) {
+    const e = day(r.end);
+    if (e >= E || e < E - 7 || r[k1] === '' || r[k2] === '') continue;
+    if (!last[r.pollster] || e >= day(last[r.pollster].end)) last[r.pollster] = r;
+  }
+  const hit = Object.keys(last).filter(p => +last[p][k1] > +last[p][k2]).sort();
+  // Each pollster's 1st-round miss on Lula's two-way share (result minus poll), in pp.
+  const pctOf = k => res.candidates.find(c => norm(c.urna).split(' ')[0] === k).pct;
+  const resLula = pctOf('lula') / (pctOf('lula') + pctOf('flavio')) * 100;
+  const bias = {};
+  for (const [p, r] of Object.entries(last)) bias[p] = resLula - +r.lula / (+r.lula + +r.flavio) * 100;
+  return { hit: new Set(hit), total: Object.keys(last).length, winner: top[0].urna, bias };
+}
+
+// ---- Projection: five independent methods, averaged into an ensemble ----
+const BW = 14;              // LOESS bandwidth (days)
+const ALPHA = 0.5, BETA = 0.3, PHI = 0.85;  // damped Holt
+const Q = 0.1, HOUSE = 1.5; // Kalman: daily drift variance (pp²) and house-effect sd (pp)
+const MIN_ERR = 1.5;        // floor for the historical poll error (pp)
+
+const weight = p => Math.sqrt(Math.min(p.n || 1000, N_CAP));
+const erf = x => {
+  const s = Math.sign(x); x = Math.abs(x);
+  const t = 1 / (1 + 0.3275911 * x);
+  return s * (1 - ((((1.061405429 * t - 1.453152027) * t + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-x * x));
+};
+const ncdf = z => 0.5 * (1 + erf(z / Math.SQRT2));
+
+function wls(pts) {
+  let sw = 0, st = 0, sy = 0;
+  for (const p of pts) { sw += p.w; st += p.w * p.t; sy += p.w * p.y; }
+  const mt = st / sw, my = sy / sw;
+  let sxx = 0, sxy = 0;
+  for (const p of pts) { sxx += p.w * (p.t - mt) ** 2; sxy += p.w * (p.t - mt) * (p.y - my); }
+  const b = sxx > 0 ? sxy / sxx : 0;
+  return d => my + b * (d - mt);
+}
+
+function forecast(polls, bias) {
+  const E1 = day(ELECTION_1T), E2 = day(ELECTION_2T);
+  if (TODAY >= E2) return null;
+  const known = polls.filter(p => p.end <= TODAY);
+  const post = known.filter(p => p.end > E1);
+  const now = average(polls, TODAY);
+  if (post.length < 4 || !now) return null;
+  const tLast = Math.max(...post.map(p => p.end));
+
+  // 1. Weighted linear regression over all runoff-campaign polls.
+  const ols = wls(post.map(p => ({ t: p.end, y: p.lula, w: weight(p) })));
+
+  // 2. LOESS: local linear fit around the latest poll (tricube kernel), extrapolated.
+  const loess = wls(known.filter(p => tLast - p.end < BW)
+    .map(p => ({ t: p.end, y: p.lula, w: weight(p) * (1 - ((tLast - p.end) / BW) ** 3) ** 3 })));
+
+  // 3. Damped Holt (level + trend) over the daily average since the 1st round.
+  let L = null, T = 0;
+  for (let d = E1 + 1; d <= TODAY; d++) {
+    const a = average(polls, d);
+    if (!a) continue;
+    if (L === null) { L = a.lula; continue; }
+    const prev = L;
+    L = ALPHA * a.lula + (1 - ALPHA) * (L + PHI * T);
+    T = BETA * (L - prev) + (1 - BETA) * PHI * T;
+  }
+  const holt = d => { let s = 0, ph = 1; for (let i = 1; i <= d - TODAY; i++) { ph *= PHI; s += ph; } return L + T * s; };
+
+  // 4. Kalman filter (random-walk level), each poll weighted by sampling + house error.
+  let x = null, P = 25, tPrev = null;
+  for (const p of known.filter(p => p.end >= day(CHART_FROM)).sort((a, b) => a.end - b.end)) {
+    if (x === null) { x = p.lula; tPrev = p.end; continue; }
+    P += Q * (p.end - tPrev); tPrev = p.end;
+    const R = p.lula * (100 - p.lula) / (p.n || 1000) + HOUSE ** 2;
+    const K = P / (P + R);
+    x += K * (p.lula - x); P *= 1 - K;
+  }
+  const kalman = () => x;
+
+  // 5. Current average corrected by these pollsters' 1st-round miss.
+  const misses = [...new Set(post.map(p => p.pollster))].filter(p => p in bias).map(p => bias[p]);
+  const meanMiss = misses.length ? misses.reduce((a, b) => a + b, 0) / misses.length : 0;
+  const corrected = () => now.lula + meanMiss;
+
+  const methods = [
+    { name: 'Regressão linear', f: ols },
+    { name: 'LOESS', f: loess },
+    { name: 'Holt amortecido', f: holt },
+    { name: 'Filtro de Kalman', f: kalman },
+    { name: 'Correção pelo erro do 1º turno', f: corrected },
+  ].map(m => ({ ...m, end: Math.min(99, Math.max(1, m.f(E2))) }));
+  const mu = methods.reduce((s, m) => s + m.end, 0) / methods.length;
+  const spread = Math.sqrt(methods.reduce((s, m) => s + (m.end - mu) ** 2, 0) / (methods.length - 1));
+  const histErr = Math.max(MIN_ERR, misses.length ? Math.sqrt(misses.reduce((s, b) => s + b * b, 0) / misses.length) : MIN_ERR);
+  const sd = Math.hypot(spread, histErr);
+  const pFlavio = ncdf((50 - mu) / sd);
+  // The drawn path runs straight from today's average to the ensemble's election-day value.
+  const at = d => now.lula + (mu - now.lula) * (d - TODAY) / (E2 - TODAY);
+  const band = d => 1.2816 * sd * (d - TODAY) / (E2 - TODAY);
+  return { methods, mu, sd, pFlavio, at, band, start: now.lula };
+}
+
+function average(polls, d) {
+  const latest = {};
+  for (const p of polls) {
+    if (p.end > d || d - p.end > WINDOW_DAYS) continue;
+    if (!latest[p.pollster] || p.end > latest[p.pollster].end) latest[p.pollster] = p;
+  }
+  const used = Object.values(latest);
+  if (!used.length) return null;
+  let sw = 0, s = 0;
+  for (const p of used) {
+    const w = Math.sqrt(Math.min(p.n || 1000, N_CAP)) * Math.pow(0.5, (d - p.end) / HALF_LIFE);
+    sw += w; s += w * p.lula;
+  }
+  return { lula: s / sw, flavio: 100 - s / sw, used };
+}
+
+let DATA = null;
+let MODE = location.hash === '#acertaram' ? 'hit' : 'all';
+
+async function load() {
+  TODAY = localToday();
+  const get = (u, type) => fetch(u, { cache: 'no-cache' }).then(r => { if (!r.ok) throw new Error(u); return r[type](); });
+  const [t1, t2, res, agenda] = await Promise.all([
+    get(SRC.t1, 'text').then(parseCSV),
+    get(SRC.t2, 'text').then(parseCSV),
+    get(SRC.res, 'json'),
+    get(SRC.agenda, 'json').catch(() => null),
+  ]);
+  const acc = accuratePollsters(t1, res);
+  const polls = t2.map(r => {
+    const l = +r.lula, f = +r.flavio;
+    return { pollster: r.pollster, start: day(r.start), end: day(r.end), n: +r.n, lula: l / (l + f) * 100, raw: [l, f], src: r.source };
+  }).filter(p => isFinite(p.lula) && p.end >= day(CHART_FROM) - WINDOW_DAYS);
+  DATA = { polls, acc, agenda, loadedAt: new Date() };
+  render();
+}
+
+function currentPolls() {
+  return MODE === 'hit' ? DATA.polls.filter(p => DATA.acc.hit.has(p.pollster)) : DATA.polls;
+}
+
+function render() {
+  document.querySelectorAll('.toggle button').forEach(b => b.setAttribute('aria-pressed', b.dataset.mode === MODE));
+  const polls = currentPolls();
+  const lastEnd = Math.max(...polls.map(p => p.end));
+  const cur = average(polls, TODAY);
+  if (cur) {
+    $('#vL').innerHTML = pct(cur.lula) + '<small>%</small>';
+    $('#vF').innerHTML = pct(cur.flavio) + '<small>%</small>';
+    const diff = cur.flavio - cur.lula;
+    const lead = Math.abs(diff) < 0.05 ? 'Empate' : (diff > 0 ? 'Flávio' : 'Lula') + ' +' + pct(Math.abs(diff)) + ' pp';
+    $('#meta').innerHTML =
+      `<span>Vantagem: <b>${lead}</b></span>` +
+      `<span><b>${cur.used.length}</b> pesquisas nos últimos ${WINDOW_DAYS} dias</span>` +
+      `<span>Última: <b>${br(lastEnd)}</b></span>` +
+      (MODE === 'hit' ? `<span>Institutos: <b>${[...DATA.acc.hit].join(', ')}</b></span>` : '');
+  } else {
+    $('#vL').textContent = $('#vF').textContent = '–';
+    $('#meta').textContent = `Nenhuma pesquisa nos últimos ${WINDOW_DAYS} dias.`;
+  }
+  const fc = forecast(polls, DATA.acc.bias);
+  renderProjection(fc);
+  renderChart(polls, fc);
+  renderNext();
+  renderFoot();
+}
+
+const margin = lula => {
+  const d = (100 - lula) - lula;
+  return Math.abs(d) < 0.05 ? 'Empate' : (d > 0 ? 'Flávio' : 'Lula') + ' +' + pct(Math.abs(d));
+};
+
+function renderProjection(fc) {
+  const el = $('#proj');
+  if (!fc) { el.style.display = 'none'; return; }
+  el.style.display = '';
+  const flavioWins = fc.mu < 50;
+  const winner = flavioWins ? 'Flávio' : 'Lula';
+  const share = flavioWins ? 100 - fc.mu : fc.mu;
+  const chance = Math.round((flavioWins ? fc.pFlavio : 1 - fc.pFlavio) * 100);
+  el.innerHTML =
+    `<div class="proj-head"><span class="tag">Projeção · 25 out</span>` +
+    `<p><span class="big" style="color:var(--${flavioWins ? 'flavio' : 'lula'})">${winner}</span> ` +
+    `vence com <b>${pct(share)}%</b> dos válidos · chance estimada de <b>${Math.min(chance, 99)}%</b></p></div>` +
+    `<ul class="chips">` + fc.methods.map(m =>
+      `<li><i style="background:var(--${m.end < 50 ? 'flavio' : 'lula'})"></i>${m.name} <b>${margin(m.end)}</b></li>`).join('') +
+    `</ul>`;
+}
+
+let chartState = null;
+function renderChart(polls, fc) {
+  const svg = $('#plot');
+  const W = svg.clientWidth, H = svg.clientHeight;
+  const m = { t: 24, r: 64, b: 28, l: 36 };
+  const x0 = day(CHART_FROM), x1 = day(ELECTION_2T);
+  const series = [];
+  for (let d = x0; d <= Math.min(TODAY, x1); d++) series.push({ d, a: average(polls, d) });
+  const shown = polls.filter(p => p.end >= x0);
+  const vals = shown.flatMap(p => [p.lula, 100 - p.lula]);
+  if (fc) { const b = fc.band(x1); vals.push(fc.mu - b, fc.mu + b, 100 - fc.mu - b, 100 - fc.mu + b); }
+  let lo = Math.floor((Math.min(...vals, 45) - 1) / 5) * 5, hi = Math.ceil((Math.max(...vals, 55) + 1) / 5) * 5;
+  const X = d => m.l + (d - x0) / (x1 - x0) * (W - m.l - m.r);
+  const Y = v => m.t + (hi - v) / (hi - lo) * (H - m.t - m.b);
+  const path = key => {
+    let s = '', pen = false;
+    for (const p of series) {
+      if (!p.a) { pen = false; continue; }
+      s += (pen ? 'L' : 'M') + X(p.d).toFixed(1) + ',' + Y(p.a[key]).toFixed(1); pen = true;
+    }
+    return s;
+  };
+  let g = '';
+  for (let v = lo; v <= hi; v += 5) {
+    g += `<line x1="${m.l}" x2="${W - m.r}" y1="${Y(v)}" y2="${Y(v)}" stroke="var(--grid)" stroke-width="1" ${v === 50 ? 'stroke-dasharray="4 4" stroke="var(--muted)"' : ''}/>`;
+    g += `<text x="${m.l - 8}" y="${Y(v) + 4}" text-anchor="end">${v}</text>`;
+  }
+  for (const s of ['2026-09-01', '2026-09-15', '2026-10-01', '2026-10-15']) {
+    const d = day(s); g += `<text x="${X(d)}" y="${H - 8}" text-anchor="middle">${br(d)}</text>`;
+  }
+  const tight = X(x1) - X(day(ELECTION_1T)) < 120;
+  for (const [s, label] of [[ELECTION_1T, tight ? '1T' : '1º turno'], [ELECTION_2T, tight ? '2T' : '2º turno']]) {
+    const d = day(s);
+    g += `<line x1="${X(d)}" x2="${X(d)}" y1="${m.t - 6}" y2="${H - m.b}" stroke="var(--ink)" stroke-width="2"/>`;
+    g += `<text class="ev" x="${X(d)}" y="${m.t - 10}" text-anchor="${s === ELECTION_2T ? 'end' : 'middle'}">${label}</text>`;
+  }
+  for (const p of shown) {
+    g += `<circle cx="${X(p.end)}" cy="${Y(p.lula)}" r="4" fill="var(--lula)" opacity=".35"/>`;
+    g += `<circle cx="${X(p.end)}" cy="${Y(100 - p.lula)}" r="4" fill="var(--flavio)" opacity=".35"/>`;
+  }
+  g += `<path d="${path('lula')}" fill="none" stroke="var(--lula)" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>`;
+  g += `<path d="${path('flavio')}" fill="none" stroke="var(--flavio)" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>`;
+  const last = [...series].reverse().find(p => p.a);
+  // Labels go at the end of the projection when there is one, else at today's average.
+  let lab = last && { x: X(last.d), l: last.a.lula };
+  if (fc) {
+    for (const [c, sign] of [['lula', 1], ['flavio', -1]]) {
+      const v = d => c === 'lula' ? fc.at(d) : 100 - fc.at(d);
+      const up = [], dn = [];
+      for (let d = TODAY; d <= x1; d++) { up.push(`${X(d).toFixed(1)},${Y(v(d) + fc.band(d)).toFixed(1)}`); dn.unshift(`${X(d).toFixed(1)},${Y(v(d) - fc.band(d)).toFixed(1)}`); }
+      g += `<polygon points="${up.concat(dn).join(' ')}" fill="var(--${c})" opacity=".14"/>`;
+      g += `<line x1="${X(TODAY)}" y1="${Y(v(TODAY))}" x2="${X(x1)}" y2="${Y(v(x1))}" stroke="var(--${c})" stroke-width="3" stroke-dasharray="6 5" stroke-linecap="round"/>`;
+    }
+    lab = { x: X(x1), l: fc.mu };
+  }
+  if (last) {
+    g += `<circle cx="${X(last.d)}" cy="${Y(last.a.lula)}" r="5" fill="var(--lula)" stroke="var(--surface)" stroke-width="2"/>`;
+    g += `<circle cx="${X(last.d)}" cy="${Y(last.a.flavio)}" r="5" fill="var(--flavio)" stroke="var(--surface)" stroke-width="2"/>`;
+  }
+  if (lab) {
+    let yl = Y(lab.l), yf = Y(100 - lab.l);
+    if (Math.abs(yl - yf) < 16) { const mid = (yl + yf) / 2, s = yl < yf ? -1 : 1; yl = mid + s * 8; yf = mid - s * 8; }
+    g += `<text class="lbl" x="${lab.x + 9}" y="${yl + 4}">${pct(lab.l)}</text>`;
+    g += `<text class="lbl" x="${lab.x + 9}" y="${yf + 4}">${pct(100 - lab.l)}</text>`;
+  }
+  g += `<g id="hover" style="display:none"><line id="hx" y1="${m.t}" y2="${H - m.b}" stroke="var(--ink)" stroke-width="1"/>` +
+       `<circle id="hl" r="5" fill="var(--lula)" stroke="var(--surface)" stroke-width="2"/><circle id="hf" r="5" fill="var(--flavio)" stroke="var(--surface)" stroke-width="2"/></g>`;
+  g += `<rect x="${m.l}" y="0" width="${W - m.l - m.r}" height="${H}" fill="transparent" id="hit"/>`;
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  svg.innerHTML = g;
+  chartState = { series, X, Y, x0, m, W, polls, fc };
+}
+
+function onMove(e) {
+  if (!chartState) return;
+  const { series, X, Y, x0, m, W, polls, fc } = chartState;
+  const svg = $('#plot'), r = svg.getBoundingClientRect();
+  const px = e.clientX - r.left;
+  const x1 = day(ELECTION_2T);
+  const d = Math.round(x0 + (px - m.l) / (W - m.l - m.r) * (x1 - x0));
+  const future = fc && d > TODAY && d <= x1;
+  const p = future ? { a: { lula: fc.at(d), flavio: 100 - fc.at(d) } } : series.find(s => s.d === d);
+  const hover = $('#hover'), tip = $('#tip');
+  if (!p || !p.a) { hover.style.display = 'none'; tip.style.display = 'none'; return; }
+  hover.style.display = '';
+  $('#hx').setAttribute('x1', X(d)); $('#hx').setAttribute('x2', X(d));
+  $('#hl').setAttribute('cx', X(d)); $('#hl').setAttribute('cy', Y(p.a.lula));
+  $('#hf').setAttribute('cx', X(d)); $('#hf').setAttribute('cy', Y(p.a.flavio));
+  const sameDay = polls.filter(q => q.end === d).map(q => q.pollster);
+  tip.innerHTML = `<b>${br(d)}${future ? ' · projeção' : ''}</b><br><i style="background:var(--lula)"></i>Lula ${pct(p.a.lula)}%<br>` +
+    `<i style="background:var(--flavio)"></i>Flávio ${pct(p.a.flavio)}%<br>` +
+    (future ? `<span style="color:var(--muted)">faixa de 80%: ±${pct(fc.band(d))} pp</span>`
+      : `<span style="color:var(--muted)">${p.a.used.length} pesquisas na média</span>`) +
+    (sameDay.length ? `<br><span style="color:var(--muted)">Novas: ${sameDay.join(', ')}</span>` : '');
+  tip.style.display = 'block';
+  const box = svg.parentElement.getBoundingClientRect();
+  let left = e.clientX - box.left + 16;
+  if (left + tip.offsetWidth > box.width - 8) left = e.clientX - box.left - tip.offsetWidth - 16;
+  tip.style.left = left + 'px';
+  tip.style.top = (svg.offsetTop + 8) + 'px';
+}
+
+// Match agenda trade names ("Futura Inteligência") to poll names ("Modalmais/Futura").
+const STOP = new Set(['instituto', 'inteligencia', 'pesquisa', 'pesquisas', 'brasil', 'de', 'e', 'ltda', 'btg', 'pactual', 'genial', 'modalmais', 'aya', 'meio']);
+const tokens = s => norm(s).split(/[^a-z0-9]+/).filter(t => t.length > 2 && !STOP.has(t));
+const isHit = name => { const t = new Set(tokens(name)); return [...DATA.acc.hit].some(h => tokens(h).some(x => t.has(x))); };
+
+function renderNext() {
+  const tb = $('#next');
+  const a = DATA.agenda;
+  if (!a || !a.upcoming) { tb.innerHTML = '<tr><td colspan="5" class="empty">Agenda indisponível no momento.</td></tr>'; return; }
+  let rows = Object.values(a.upcoming)
+    .filter(u => day(u.disclosureDate) >= TODAY && day(u.disclosureDate) <= day(ELECTION_2T))
+    .sort((x, y) => x.disclosureDate.localeCompare(y.disclosureDate) || (x.tradeName || '').localeCompare(y.tradeName || ''));
+  if (MODE === 'hit') rows = rows.filter(u => isHit(u.tradeName || u.company));
+  if (!rows.length) { tb.innerHTML = '<tr><td colspan="5" class="empty">Nenhuma pesquisa registrada até o 2º turno.</td></tr>'; return; }
+  tb.innerHTML = rows.map(u => {
+    const name = u.tradeName || u.company;
+    const d = day(u.disclosureDate);
+    return `<tr><td><b>${d === TODAY ? 'Hoje' : br(d)}</b></td><td>${name}${MODE === 'all' && isHit(name) ? '<span class="star" title="Acertou o líder no 1º turno">acertou 1T</span>' : ''}</td>` +
+      `<td>${br(day(u.fieldStart))}–${br(day(u.fieldEnd))}</td><td class="num">${(+u.sample).toLocaleString('pt-BR')}</td><td class="num col-reg">${u.protocol}</td></tr>`;
+  }).join('');
+}
+
+function renderFoot() {
+  const acc = DATA.acc;
+  $('#foot').innerHTML =
+    `<p><b>Como a média é feita:</b> votos válidos (Lula ÷ (Lula + Flávio)); última pesquisa de cada instituto nos últimos ${WINDOW_DAYS} dias; ` +
+    `peso = √amostra (limite ${N_CAP.toLocaleString('pt-BR')}) × meia-vida de ${HALF_LIFE} dias.</p>` +
+    `<p><b>"Acertaram o 1º turno":</b> ${acc.hit.size} de ${acc.total} institutos cuja última pesquisa antes de 4/out ` +
+    `colocava ${acc.winner === 'FLAVIO BOLSONARO' ? 'Flávio' : acc.winner} à frente, como no resultado do TSE: ${[...acc.hit].join(', ')}.</p>` +
+    `<p><b>Projeção:</b> média de 5 métodos aplicados às pesquisas do filtro ativo — regressão linear ponderada (pesquisas desde o 1º turno), ` +
+    `LOESS (ajuste local de ${BW} dias, extrapolado), Holt amortecido (nível + tendência da média diária), filtro de Kalman (nível com ruído amostral e de instituto) ` +
+    `e média atual corrigida pelo erro desses institutos no 1º turno. A chance soma a divergência entre os métodos ao erro histórico dos institutos no 1º turno. ` +
+    `É uma estimativa estatística, não uma previsão garantida.</p>` +
+    `<p>Dados: <a href="https://github.com/Fcairo1/agregador-br">Fcairo1/agregador-br</a> (pesquisas e resultado TSE) · ` +
+    `<a href="https://github.com/rafaujo/eleicoes-2026-pesquisas">rafaujo/eleicoes-2026-pesquisas</a> (agenda de registros no TSE` +
+    (DATA.agenda?.sourceGeneratedAt ? `, atualizada em ${DATA.agenda.sourceGeneratedAt}` : '') + `).</p>` +
+    `<p>Dados carregados às ${DATA.loadedAt.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })} · recarrega sozinho a cada ${REFRESH_MIN} min.</p>`;
+}
+
+document.querySelectorAll('.toggle button').forEach(b => b.addEventListener('click', () => {
+  MODE = b.dataset.mode;
+  history.replaceState(null, '', MODE === 'hit' ? '#acertaram' : location.pathname + location.search);
+  render();
+}));
+$('#plot').addEventListener('pointermove', onMove);
+$('#plot').addEventListener('pointerleave', () => { $('#tip').style.display = 'none'; const h = $('#hover'); if (h) h.style.display = 'none'; });
+let rt; addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(() => DATA && render(), 150); });
+
+load().catch(e => { const el = $('#err'); el.style.display = 'block'; el.textContent = 'Não foi possível carregar os dados (' + e.message + ').'; });
+// Background refresh keeps the last good data on screen if a fetch fails.
+setInterval(() => load().catch(() => {}), REFRESH_MIN * 60e3);
+</script>
+</body>
+</html>
