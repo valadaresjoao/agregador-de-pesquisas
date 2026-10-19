@@ -161,6 +161,8 @@ footer a { color: var(--ink-2); }
   <footer id="foot"></footer>
 </main>
 
+<script src="model.js"></script>
+<script src="calibration.js"></script>
 <script>
 const RAW = 'https://raw.githubusercontent.com/';
 const SRC = {
@@ -174,9 +176,7 @@ const SRC = {
 const ELECTION_1T = '2026-10-04';
 const ELECTION_2T = '2026-10-25';
 const CHART_FROM = '2026-09-01';
-const WINDOW_DAYS = 14;   // polls older than this drop out of the average
-const HALF_LIFE = 7;      // recency weight halves every 7 days
-const N_CAP = 4000;       // sample-size influence capped before sqrt weighting
+const { windowDays: WINDOW_DAYS, halfLife: HALF_LIFE, nCap: N_CAP } = PollModel.DEFAULTS;
 
 const $ = s => document.querySelector(s);
 const day = s => Date.UTC(+s.slice(0, 4), +s.slice(5, 7) - 1, +s.slice(8, 10)) / 864e5;
@@ -204,11 +204,7 @@ function parseCSV(t) {
   return rows.filter(r => r.length > 1).map(r => Object.fromEntries(head.map((k, i) => [k, r[i] ?? ''])));
 }
 
-// One key per institute across sources: "Genial/Quaest" and "Quaest" -> "quaest",
-// "Modalmais/Futura" and "Futura Inteligência" -> "futura", "Verita" and "Veritá" -> "verita".
-const KEY_STOP = new Set(['instituto', 'inteligencia', 'pesquisa', 'pesquisas', 'brasil', 'de', 'e', 'ltda', 'btg', 'pactual',
-  'genial', 'modalmais', 'apex', 'aya', 'meio', 'broadcast', '100', 'cidades', 'cnt']);
-const pollsterKey = s => norm(s).split(/[^a-z0-9]+/).filter(t => t && !KEY_STOP.has(t))[0] || norm(s);
+const pollsterKey = PollModel.pollsterKey;
 
 const MONTHS = { jan: 0, feb: 1, fev: 1, mar: 2, apr: 3, abr: 3, may: 4, mai: 4, jun: 5, jul: 6, aug: 7, ago: 7,
   sep: 8, set: 8, oct: 9, out: 9, nov: 10, dec: 11, dez: 11 };
@@ -317,110 +313,15 @@ function accuratePollsters(t1, res) {
   const resLula = pctOf('lula') / (pctOf('lula') + pctOf('flavio')) * 100;
   const bias = {};
   for (const [k, r] of Object.entries(last)) bias[k] = resLula - +r.lula / (+r.lula + +r.flavio) * 100;
-  return { hit: new Set(hitKeys), names: hitKeys.map(k => last[k].pollster).sort(), total: Object.keys(last).length, winner: top[0].urna, bias };
+  return { hit: new Set(hitKeys), names: hitKeys.map(k => last[k].pollster).sort(), total: Object.keys(last).length, winner: top[0].urna, bias, firstRound: resLula };
 }
 
-// ---- Projection: five independent methods, averaged into an ensemble ----
-const BW = 14;              // LOESS bandwidth (days)
-const ALPHA = 0.5, BETA = 0.3, PHI = 0.85;  // damped Holt
-const Q = 0.1, HOUSE = 1.5; // Kalman: daily drift variance (pp²) and house-effect sd (pp)
-const MIN_ERR = 1.5;        // floor for the historical poll error (pp)
-
-const weight = p => Math.sqrt(Math.min(p.n || 1000, N_CAP));
-const erf = x => {
-  const s = Math.sign(x); x = Math.abs(x);
-  const t = 1 / (1 + 0.3275911 * x);
-  return s * (1 - ((((1.061405429 * t - 1.453152027) * t + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-x * x));
-};
-const ncdf = z => 0.5 * (1 + erf(z / Math.SQRT2));
-
-function wls(pts) {
-  let sw = 0, st = 0, sy = 0;
-  for (const p of pts) { sw += p.w; st += p.w * p.t; sy += p.w * p.y; }
-  const mt = st / sw, my = sy / sw;
-  let sxx = 0, sxy = 0;
-  for (const p of pts) { sxx += p.w * (p.t - mt) ** 2; sxy += p.w * (p.t - mt) * (p.y - my); }
-  const b = sxx > 0 ? sxy / sxx : 0;
-  return d => my + b * (d - mt);
-}
-
-function forecast(polls, bias) {
-  const E1 = day(ELECTION_1T), E2 = day(ELECTION_2T);
-  if (TODAY >= E2) return null;
-  const known = polls.filter(p => p.end <= TODAY);
-  const post = known.filter(p => p.end > E1);
-  const now = average(polls, TODAY);
-  if (post.length < 4 || !now) return null;
-  const tLast = Math.max(...post.map(p => p.end));
-
-  // 1. Weighted linear regression over all runoff-campaign polls.
-  const ols = wls(post.map(p => ({ t: p.end, y: p.lula, w: weight(p) })));
-
-  // 2. LOESS: local linear fit around the latest poll (tricube kernel), extrapolated.
-  const loess = wls(known.filter(p => tLast - p.end < BW)
-    .map(p => ({ t: p.end, y: p.lula, w: weight(p) * (1 - ((tLast - p.end) / BW) ** 3) ** 3 })));
-
-  // 3. Damped Holt (level + trend) over the daily average since the 1st round.
-  let L = null, T = 0;
-  for (let d = E1 + 1; d <= TODAY; d++) {
-    const a = average(polls, d);
-    if (!a) continue;
-    if (L === null) { L = a.lula; continue; }
-    const prev = L;
-    L = ALPHA * a.lula + (1 - ALPHA) * (L + PHI * T);
-    T = BETA * (L - prev) + (1 - BETA) * PHI * T;
-  }
-  const holt = d => { let s = 0, ph = 1; for (let i = 1; i <= d - TODAY; i++) { ph *= PHI; s += ph; } return L + T * s; };
-
-  // 4. Kalman filter (random-walk level), each poll weighted by sampling + house error.
-  let x = null, P = 25, tPrev = null;
-  for (const p of known.filter(p => p.end >= day(CHART_FROM)).sort((a, b) => a.end - b.end)) {
-    if (x === null) { x = p.lula; tPrev = p.end; continue; }
-    P += Q * (p.end - tPrev); tPrev = p.end;
-    const R = p.lula * (100 - p.lula) / (p.n || 1000) + HOUSE ** 2;
-    const K = P / (P + R);
-    x += K * (p.lula - x); P *= 1 - K;
-  }
-  const kalman = () => x;
-
-  // 5. Current average corrected by these pollsters' 1st-round miss.
-  const misses = [...new Set(post.map(p => p.key))].filter(k => k in bias).map(k => bias[k]);
-  const meanMiss = misses.length ? misses.reduce((a, b) => a + b, 0) / misses.length : 0;
-  const corrected = () => now.lula + meanMiss;
-
-  const methods = [
-    { name: 'Regressão linear', f: ols },
-    { name: 'LOESS', f: loess },
-    { name: 'Holt amortecido', f: holt },
-    { name: 'Filtro de Kalman', f: kalman },
-    { name: 'Correção pelo erro do 1º turno', f: corrected },
-  ].map(m => ({ ...m, end: Math.min(99, Math.max(1, m.f(E2))) }));
-  const mu = methods.reduce((s, m) => s + m.end, 0) / methods.length;
-  const spread = Math.sqrt(methods.reduce((s, m) => s + (m.end - mu) ** 2, 0) / (methods.length - 1));
-  const histErr = Math.max(MIN_ERR, misses.length ? Math.sqrt(misses.reduce((s, b) => s + b * b, 0) / misses.length) : MIN_ERR);
-  const sd = Math.hypot(spread, histErr);
-  const pFlavio = ncdf((50 - mu) / sd);
-  // The drawn path runs straight from today's average to the ensemble's election-day value.
-  const at = d => now.lula + (mu - now.lula) * (d - TODAY) / (E2 - TODAY);
-  const band = d => 1.2816 * sd * (d - TODAY) / (E2 - TODAY);
-  return { methods, mu, sd, pFlavio, at, band, start: now.lula };
-}
-
-function average(polls, d) {
-  const latest = {};
-  for (const p of polls) {
-    if (p.end > d || d - p.end > WINDOW_DAYS) continue;
-    if (!latest[p.pollster] || p.end > latest[p.pollster].end) latest[p.pollster] = p;
-  }
-  const used = Object.values(latest);
-  if (!used.length) return null;
-  let sw = 0, s = 0;
-  for (const p of used) {
-    const w = Math.sqrt(Math.min(p.n || 1000, N_CAP)) * Math.pow(0.5, (d - p.end) / HALF_LIFE);
-    sw += w; s += w * p.lula;
-  }
-  return { lula: s / sw, flavio: 100 - s / sw, used };
-}
+// ---- Projection: model.js methods, weighted by the historical backtest (calibration.js) ----
+const CAL = globalThis.PollCalibration;
+const MODEL_CFG = CAL ? { weights: CAL.weights, errSd: h => Math.sqrt(CAL.errSd.a + CAL.errSd.b * Math.max(0, h)) } : {};
+const average = (polls, d) => PollModel.average(polls, d, MODEL_CFG);
+const forecast = (polls, acc) => PollModel.forecast(polls,
+  { today: TODAY, e1: day(ELECTION_1T), e2: day(ELECTION_2T), from: day(CHART_FROM), bias: acc.bias, firstRound: acc.firstRound }, MODEL_CFG);
 
 let DATA = null;
 let MODE = location.hash === '#acertaram' ? 'hit' : 'all';
@@ -468,7 +369,7 @@ function render() {
     $('#vL').textContent = $('#vF').textContent = '–';
     $('#meta').textContent = `Nenhuma pesquisa nos últimos ${WINDOW_DAYS} dias.`;
   }
-  const fc = forecast(polls, DATA.acc.bias);
+  const fc = forecast(polls, DATA.acc);
   renderProjection(fc);
   renderChart(polls, fc);
   renderNext();
@@ -492,8 +393,9 @@ function renderProjection(fc) {
     `<div class="proj-head"><span class="tag">Projeção · 25 out</span>` +
     `<p><span class="big" style="color:var(--${flavioWins ? 'flavio' : 'lula'})">${winner}</span> ` +
     `vence com <b>${pct(share)}%</b> dos válidos · chance estimada de <b>${Math.min(chance, 99)}%</b></p></div>` +
-    `<ul class="chips">` + fc.methods.map(m =>
-      `<li><i style="background:var(--${m.end < 50 ? 'flavio' : 'lula'})"></i>${m.name} <b>${margin(m.end)}</b></li>`).join('') +
+    `<ul class="chips">` + fc.methods.slice().sort((a, b) => b.w - a.w).map(m =>
+      `<li><i style="background:var(--${m.end < 50 ? 'flavio' : 'lula'})"></i>${m.name} <b>${margin(m.end)}</b>` +
+      ` <span style="color:var(--muted)">peso ${Math.round(m.w / fc.methods.reduce((s, x) => s + x.w, 0) * 100)}%</span></li>`).join('') +
     `</ul>`;
 }
 
@@ -628,10 +530,11 @@ function renderFoot() {
     `peso = √amostra (limite ${N_CAP.toLocaleString('pt-BR')}) × meia-vida de ${HALF_LIFE} dias.</p>` +
     `<p><b>"Acertaram o 1º turno":</b> ${acc.hit.size} de ${acc.total} institutos cuja última pesquisa antes de 4/out ` +
     `colocava ${acc.winner === 'FLAVIO BOLSONARO' ? 'Flávio' : acc.winner} à frente, como no resultado do TSE: ${acc.names.join(', ')}.</p>` +
-    `<p><b>Projeção:</b> média de 5 métodos aplicados às pesquisas do filtro ativo — regressão linear ponderada (pesquisas desde o 1º turno), ` +
-    `LOESS (ajuste local de ${BW} dias, extrapolado), Holt amortecido (nível + tendência da média diária), filtro de Kalman (nível com ruído amostral e de instituto) ` +
-    `e média atual corrigida pelo erro desses institutos no 1º turno. A chance soma a divergência entre os métodos ao erro histórico dos institutos no 1º turno. ` +
-    `É uma estimativa estatística, não uma previsão garantida.</p>` +
+    `<p><b>Projeção:</b> ${Object.keys(PollModel.NAMES).length} métodos (média atual, Kalman, Holt, regressão linear, LOESS, correção pelo erro do 1º turno e resultado do 1º turno), ` +
+    `com pesos aprendidos num backtest contra os 2º turnos de ${CAL ? CAL.elections[0] + '–' + CAL.elections[CAL.elections.length - 1] : 'eleições passadas'}: ` +
+    `quem errou menos no passado pesa mais. ` +
+    (CAL ? `Erro típico da projeção nesse teste: ${pct(CAL.rmse)} pp. A chance usa o erro real observado a cada distância da eleição (cresce quanto mais longe). ` : '') +
+    `No histórico, usar só os institutos que acertaram o 1º turno não melhorou a previsão do 2º. É uma estimativa estatística, não uma previsão garantida.</p>` +
     `<p>Fontes do 2º turno (juntas, sem duplicatas): ` + DATA.status.map(s => `${s.name} ${s.ok ? '✓ ' + s.count : '✗ fora do ar'}`).join(' · ') + `.</p>` +
     `<p>Dados: <a href="https://github.com/Fcairo1/agregador-br">Fcairo1/agregador-br</a> (pesquisas e resultado TSE) · ` +
     WIKIS.map(w => `<a href="https://${w.host}/wiki/${w.page}">${w.name}</a>`).join(' · ') + ' · ' +
