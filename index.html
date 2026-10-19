@@ -607,6 +607,9 @@ function renderNext() {
   if (!a || !a.upcoming) { tb.innerHTML = '<tr><td colspan="5" class="empty">Agenda indisponível no momento.</td></tr>'; return; }
   let rows = Object.values(a.upcoming)
     .filter(u => day(u.disclosureDate) >= TODAY && day(u.disclosureDate) <= day(ELECTION_2T))
+    // Drop registrations whose results already reached any source.
+    .filter(u => { const k = pollsterKey(u.tradeName || u.company), e = day(u.fieldEnd);
+      return !DATA.polls.some(p => p.key === k && Math.abs(p.end - e) <= 1); })
     .sort((x, y) => x.disclosureDate.localeCompare(y.disclosureDate) || (x.tradeName || '').localeCompare(y.tradeName || ''));
   if (MODE === 'hit') rows = rows.filter(u => isHit(u.tradeName || u.company));
   if (!rows.length) { tb.innerHTML = '<tr><td colspan="5" class="empty">Nenhuma pesquisa registrada até o 2º turno.</td></tr>'; return; }
