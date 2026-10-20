@@ -96,6 +96,7 @@ th { font-size: 12px; text-transform: uppercase; background: var(--ink); color: 
 td.num { font-variant-numeric: tabular-nums; }
 tr:last-child td { border-bottom: 0; }
 .star { background: var(--accent); color: #111; border: 2px solid var(--line); font-size: 11px; font-weight: 700; padding: 0 5px; margin-left: 6px; text-transform: uppercase; }
+.star.warn { background: var(--surface); color: var(--lula); border-color: var(--lula); }
 .empty { padding: 16px; color: var(--ink-2); }
 
 footer { margin-top: 32px; font-size: 13px; color: var(--muted); }
@@ -526,7 +527,9 @@ function renderNext() {
     const name = u.tradeName || u.company;
     const d = day(u.disclosureDate);
     return `<tr><td><b>${d === TODAY ? 'Hoje' : br(d)}</b></td><td>${name}${hitStar(name)}</td>` +
-      `<td>${br(day(u.fieldStart))}–${br(day(u.fieldEnd))}</td><td class="num">${(+u.sample).toLocaleString('pt-BR')}</td><td class="num col-reg">${u.protocol}</td></tr>`;
+      // TSE registrations are self-declared; flag ones disclosed before their fieldwork ends.
+      `<td>${br(day(u.fieldStart))}–${br(day(u.fieldEnd))}${d < day(u.fieldEnd) ? '<span class="star warn" title="O registro no TSE tem divulgação antes do fim do campo">datas inconsistentes no registro</span>' : ''}</td>` +
+      `<td class="num">${(+u.sample).toLocaleString('pt-BR')}</td><td class="num col-reg">${u.protocol}</td></tr>`;
   }).join('');
 }
 
