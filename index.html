@@ -148,6 +148,16 @@ footer a { color: var(--ink-2); }
     <div class="tip" id="tip"></div>
   </section>
 
+  <section style="margin-bottom:32px">
+    <h2>Últimas pesquisas</h2>
+    <div class="box tablewrap">
+      <table>
+        <thead><tr><th>Campo</th><th>Instituto</th><th>Lula</th><th>Flávio</th><th>Margem</th><th class="col-reg">Amostra</th></tr></thead>
+        <tbody id="latest"><tr><td colspan="6" class="empty">Carregando…</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
   <section>
     <h2>Próximas pesquisas</h2>
     <div class="box tablewrap">
@@ -165,13 +175,11 @@ footer a { color: var(--ink-2); }
 <script src="calibration.js"></script>
 <script>
 const RAW = 'https://raw.githubusercontent.com/';
+// Runoff polls come only from Wikipedia (WIKI below); these feed the 1st-round filter and the agenda.
 const SRC = {
   t1: RAW + 'Fcairo1/agregador-br/main/data/polls.presidente.csv',
-  t2: RAW + 'Fcairo1/agregador-br/main/data/polls.presidente-2t-flavio.csv',
   res: RAW + 'Fcairo1/agregador-br/main/data/results.presidente.json',
   agenda: RAW + 'rafaujo/eleicoes-2026-pesquisas/main/data/tse-monitor.json',
-  // Extra runoff sources, merged with t2 so whichever publishes a poll first wins.
-  boca: RAW + 'bocadojacare/agregador-eleicoes-2026/main/data/segundo_turno/pesquisas_segundo_turno.json',
 };
 const ELECTION_1T = '2026-10-04';
 const ELECTION_2T = '2026-10-25';
@@ -190,6 +198,7 @@ const norm = s => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
 const localToday = () => { const n = new Date(); return day(`${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`); };
 let TODAY = localToday();
 const REFRESH_MIN = 30;
+const LATEST_N = 10;
 
 function parseCSV(t) {
   const rows = []; let row = [], f = '', q = false;
@@ -241,21 +250,13 @@ const cleanWiki = s => s
   .replace(/\{\{[^{}]*\}\}/g, '').replace(/\[\[(?:[^\]|]*\|)?([^\]]*)\]\]/g, '$1')
   .replace(/'''?/g, '').replace(/<[^>]+>/g, ' ').trim();
 
-// Runoff tables on Wikipedia, read through the public API. Each edition has its own
-// section layout and column order; `section` picks the section, `cols` the cells
-// [pollster, period, sample, lula, flavio].
-const WIKIS = [
-  { name: 'Wikipédia PT', host: 'pt.wikipedia.org', page: 'Pesquisas_de_opinião_para_a_eleição_presidencial_no_Brasil_em_2026',
-    cols: [0, 1, 2, 4, 5],
-    // "Segundo turno" > "Lula e Flávio Bolsonaro" > "2026"
-    section: list => { const i = list.findIndex(s => /lula/i.test(s.line) && /fl[aá]vio/i.test(s.line));
-      return i < 0 ? null : list.slice(i + 1).find(s => s.line.trim() === '2026'); } },
-  { name: 'Wikipédia EN', host: 'en.wikipedia.org', page: 'Opinion_polling_for_the_2026_Brazilian_presidential_election',
-    cols: [0, 1, 6, 2, 3],
-    // "Second round" > "2026" > first subsection (newest polls)
-    section: list => { const i = list.findIndex(s => /second round/i.test(s.line));
-      return i < 0 ? null : list.slice(i + 1).find(s => +s.toclevel > +list[i].toclevel + 1); } },
-];
+// Runoff table on Portuguese Wikipedia, read through the public API. `section` picks
+// the section, `cols` the cells [pollster, period, sample, lula, flavio].
+const WIKI = { name: 'Wikipédia PT', host: 'pt.wikipedia.org', page: 'Pesquisas_de_opinião_para_a_eleição_presidencial_no_Brasil_em_2026',
+  cols: [0, 1, 2, 4, 5],
+  // "Segundo turno" > "Lula e Flávio Bolsonaro" > "2026"
+  section: list => { const i = list.findIndex(s => /lula/i.test(s.line) && /fl[aá]vio/i.test(s.line));
+    return i < 0 ? null : list.slice(i + 1).find(s => s.line.trim() === '2026'); } };
 const wikiNum = s => +s.replace(/%/g, '').replace(/\s/g, '').replace(',', '.');
 
 async function fetchWiki(w) {
@@ -277,18 +278,10 @@ async function fetchWiki(w) {
   return out;
 }
 
-async function fetchBoca() {
-  const data = await fetch(SRC.boca, { cache: 'no-cache' }).then(r => r.json());
-  return data.map(x => {
-    const dates = parsePeriod(x.data), c = x.candidatos || {};
-    return dates && { pollster: x.instituto, start: dates[0], end: dates[1], n: 0, lula: +c.Lula, flavio: +(c['Flávio'] ?? c.Flavio), via: 'bocadojacare' };
-  }).filter(Boolean);
-}
-
-// Union of sources in priority order; a poll already seen (same institute, fieldwork end ±1 day) is skipped.
-function mergePolls(sources) {
+// Valid, already-fielded polls; a repeated row (same institute, fieldwork end ±1 day) is skipped.
+function cleanPolls(list) {
   const out = [];
-  for (const list of sources) for (const p of list) {
+  for (const p of list) {
     if (!(p.lula > 0 && p.flavio > 0) || p.end > TODAY) continue;
     const key = pollsterKey(p.pollster);
     if (out.some(q => q.key === key && Math.abs(q.end - p.end) <= 1)) continue;
@@ -331,20 +324,16 @@ let MODE = location.hash === '#acertaram' ? 'hit' : 'all';
 async function load() {
   TODAY = localToday();
   const get = (u, type) => fetch(u, { cache: 'no-cache' }).then(r => { if (!r.ok) throw new Error(u); return r[type](); });
-  const fcairo = () => get(SRC.t2, 'text').then(parseCSV).then(rows => rows.map(r => ({
-    pollster: r.pollster, start: day(r.start), end: day(r.end), n: +r.n, lula: +r.lula, flavio: +r.flavio, via: 'Fcairo1' })));
-  const runoffSources = [['Fcairo1', fcairo], ...WIKIS.map(w => [w.name, () => fetchWiki(w)]), ['bocadojacare', fetchBoca]];
-  const [t1, res, agenda, ...lists] = await Promise.all([
+  const [t1, res, agenda, wiki] = await Promise.all([
     get(SRC.t1, 'text').then(parseCSV),
     get(SRC.res, 'json'),
     get(SRC.agenda, 'json').catch(() => null),
-    ...runoffSources.map(([, f]) => f().catch(() => null)),
+    fetchWiki(WIKI),
   ]);
-  const status = runoffSources.map(([name], i) => ({ name, ok: !!lists[i], count: lists[i]?.length || 0 }));
-  if (!lists.some(Boolean)) throw new Error('nenhuma fonte de 2º turno respondeu');
+  if (!wiki.length) throw new Error(WIKI.name + ': nenhuma pesquisa lida');
   const acc = accuratePollsters(t1, res);
-  const polls = mergePolls(lists.filter(Boolean)).filter(p => p.end >= day(CHART_FROM) - WINDOW_DAYS);
-  DATA = { polls, acc, agenda, status, loadedAt: new Date() };
+  const polls = cleanPolls(wiki).filter(p => p.end >= day(CHART_FROM) - WINDOW_DAYS);
+  DATA = { polls, acc, agenda, loadedAt: new Date() };
   render();
 }
 
@@ -375,6 +364,7 @@ function render() {
   const fc = forecast(polls, DATA.acc);
   renderProjection(fc);
   renderChart(polls, fc);
+  renderLatest(polls);
   renderNext();
   renderFoot();
 }
@@ -505,6 +495,20 @@ function onMove(e) {
 }
 
 const isHit = name => DATA.acc.hit.has(pollsterKey(name));
+const hitStar = name => MODE === 'all' && isHit(name) ? '<span class="star" title="Acertou o líder no 1º turno">acertou 1T</span>' : '';
+
+function renderLatest(polls) {
+  const tb = $('#latest');
+  const rows = polls.slice().sort((a, b) => b.end - a.end || a.pollster.localeCompare(b.pollster)).slice(0, LATEST_N);
+  if (!rows.length) { tb.innerHTML = '<tr><td colspan="6" class="empty">Nenhuma pesquisa publicada.</td></tr>'; return; }
+  tb.innerHTML = rows.map(p => {
+    const L = r1(p.lula), m = margin(p.lula);
+    const c = m === 'Empate' ? 'ink' : m.startsWith('Lula') ? 'lula' : 'flavio';
+    return `<tr><td><b>${p.start === p.end ? br(p.end) : br(p.start) + '–' + br(p.end)}</b></td><td>${p.pollster}${hitStar(p.pollster)}</td>` +
+      `<td class="num">${pct(L)}%</td><td class="num">${pct(100 - L)}%</td><td style="color:var(--${c});font-weight:700">${m}</td>` +
+      `<td class="num col-reg">${p.n ? p.n.toLocaleString('pt-BR') : '–'}</td></tr>`;
+  }).join('');
+}
 
 function renderNext() {
   const tb = $('#next');
@@ -512,7 +516,7 @@ function renderNext() {
   if (!a || !a.upcoming) { tb.innerHTML = '<tr><td colspan="5" class="empty">Agenda indisponível no momento.</td></tr>'; return; }
   let rows = Object.values(a.upcoming)
     .filter(u => day(u.disclosureDate) >= TODAY && day(u.disclosureDate) <= day(ELECTION_2T))
-    // Drop registrations whose results already reached any source.
+    // Drop registrations whose results are already on Wikipedia.
     .filter(u => { const k = pollsterKey(u.tradeName || u.company), e = day(u.fieldEnd);
       return !DATA.polls.some(p => p.key === k && Math.abs(p.end - e) <= 1); })
     .sort((x, y) => x.disclosureDate.localeCompare(y.disclosureDate) || (x.tradeName || '').localeCompare(y.tradeName || ''));
@@ -521,7 +525,7 @@ function renderNext() {
   tb.innerHTML = rows.map(u => {
     const name = u.tradeName || u.company;
     const d = day(u.disclosureDate);
-    return `<tr><td><b>${d === TODAY ? 'Hoje' : br(d)}</b></td><td>${name}${MODE === 'all' && isHit(name) ? '<span class="star" title="Acertou o líder no 1º turno">acertou 1T</span>' : ''}</td>` +
+    return `<tr><td><b>${d === TODAY ? 'Hoje' : br(d)}</b></td><td>${name}${hitStar(name)}</td>` +
       `<td>${br(day(u.fieldStart))}–${br(day(u.fieldEnd))}</td><td class="num">${(+u.sample).toLocaleString('pt-BR')}</td><td class="num col-reg">${u.protocol}</td></tr>`;
   }).join('');
 }
@@ -538,10 +542,8 @@ function renderFoot() {
     `quem errou menos no passado pesa mais. ` +
     (CAL ? `Erro típico da projeção nesse teste: ${pct(CAL.rmse)} pp. A chance usa o erro real observado a cada distância da eleição (cresce quanto mais longe). ` : '') +
     `No histórico, usar só os institutos que acertaram o 1º turno não melhorou a previsão do 2º. É uma estimativa estatística, não uma previsão garantida.</p>` +
-    `<p>Fontes do 2º turno (juntas, sem duplicatas): ` + DATA.status.map(s => `${s.name} ${s.ok ? '✓ ' + s.count : '✗ fora do ar'}`).join(' · ') + `.</p>` +
-    `<p>Dados: <a href="https://github.com/Fcairo1/agregador-br">Fcairo1/agregador-br</a> (pesquisas e resultado TSE) · ` +
-    WIKIS.map(w => `<a href="https://${w.host}/wiki/${w.page}">${w.name}</a>`).join(' · ') + ' · ' +
-    `<a href="https://github.com/bocadojacare/agregador-eleicoes-2026">bocadojacare</a> · ` +
+    `<p>Dados: <a href="https://${WIKI.host}/wiki/${WIKI.page}">${WIKI.name}</a> (pesquisas do 2º turno, fonte única) · ` +
+    `<a href="https://github.com/Fcairo1/agregador-br">Fcairo1/agregador-br</a> (pesquisas do 1º turno e resultado TSE) · ` +
     `<a href="https://github.com/rafaujo/eleicoes-2026-pesquisas">rafaujo/eleicoes-2026-pesquisas</a> (agenda de registros no TSE` +
     (DATA.agenda?.sourceGeneratedAt ? `, atualizada em ${DATA.agenda.sourceGeneratedAt}` : '') + `).</p>` +
     `<p>Dados carregados às ${DATA.loadedAt.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })} · recarrega sozinho a cada ${REFRESH_MIN} min.</p>`;
